@@ -1,0 +1,17 @@
+name: Support
+description: Create an ticket to track support queries.
+title: "[Organization Name]: "
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Short description of the issue/query.
+    validations:
+      required: true
+  - type: input
+    id: discord-thread
+    attributes:
+      label: Discord Thread
+    validations:
+      required: false
