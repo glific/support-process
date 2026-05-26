@@ -1,0 +1,57 @@
+name: Set support week iteration
+on:
+  issues:
+    types: [opened, labeled]
+
+jobs:
+  set-iteration:
+    if: contains(github.event.issue.labels.*.name, 'support')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          PROJECT_OWNER: 'glific'
+          PROJECT_NUMBER: '1'
+          ITERATION_FIELD: 'Support Week'
+          OWNER_TYPE: organization   
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { PROJECT_OWNER: owner, ITERATION_FIELD: fieldName, OWNER_TYPE } = process.env;
+            const number = parseInt(process.env.PROJECT_NUMBER, 10);
+
+            const projQuery = `
+              query($owner: String!, $number: Int!) {
+                ${OWNER_TYPE}(login: $owner) {
+                  projectV2(number: $number) {
+                    id
+                    field(name: "${fieldName}") {
+                      ... on ProjectV2IterationField {
+                        id
+                        configuration { iterations { id startDate duration } }
+                      }
+                    }
+                  }
+                }
+              }`;
+            const proj = (await github.graphql(projQuery, { owner, number }))[OWNER_TYPE].projectV2;
+
+            const today = new Date(); today.setUTCHours(0,0,0,0);
+            const iter = proj.field.configuration.iterations.find(it => {
+              const start = new Date(it.startDate);
+              const end = new Date(start); end.setUTCDate(end.getUTCDate() + it.duration);
+              return today >= start && today < end;
+            });
+            if (!iter) { core.setFailed('No current iteration'); return; }
+
+            const add = await github.graphql(`
+              mutation($p:ID!,$c:ID!){
+                addProjectV2ItemById(input:{projectId:$p,contentId:$c}){ item { id } }
+              }`, { p: proj.id, c: context.payload.issue.node_id });
+
+            await github.graphql(`
+              mutation($p:ID!,$i:ID!,$f:ID!,$v:String!){
+                updateProjectV2ItemFieldValue(input:{
+                  projectId:$p, itemId:$i, fieldId:$f, value:{ iterationId:$v }
+                }){ projectV2Item { id } }
+              }`, { p: proj.id, i: add.addProjectV2ItemById.item.id, f: proj.field.id, v: iter.id });
