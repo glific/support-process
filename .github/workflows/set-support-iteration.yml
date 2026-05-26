@@ -13,44 +13,83 @@ jobs:
           PROJECT_NUMBER: '8'
           ITERATION_FIELD: 'Support Week'
           OWNER_TYPE: organization
-        with:
+       with:
           github-token: ${{ secrets.PROJECT_TOKEN }}
           script: |
-            const { PROJECT_OWNER: owner, ITERATION_FIELD: fieldName, OWNER_TYPE } = process.env;
+            const {
+              PROJECT_OWNER: owner,
+              ITERATION_FIELD: iterFieldName,
+              PRIORITY_FIELD: prioFieldName,
+              OWNER_TYPE,
+            } = process.env;
             const number = parseInt(process.env.PROJECT_NUMBER, 10);
 
-            const projQuery = `
+            // 1. Fetch project + both fields
+            const proj = (await github.graphql(`
               query($owner: String!, $number: Int!) {
                 ${OWNER_TYPE}(login: $owner) {
                   projectV2(number: $number) {
                     id
-                    field(name: "${fieldName}") {
+                    iter: field(name: "${iterFieldName}") {
                       ... on ProjectV2IterationField {
                         id
                         configuration { iterations { id startDate duration } }
                       }
                     }
+                    prio: field(name: "${prioFieldName}") {
+                      ... on ProjectV2SingleSelectField {
+                        id
+                        options { id name }
+                      }
+                    }
                   }
                 }
-              }`;
-            const proj = (await github.graphql(projQuery, { owner, number }))[OWNER_TYPE].projectV2;
+              }`, { owner, number }))[OWNER_TYPE].projectV2;
 
+            // 2. Current iteration
             const today = new Date(); today.setUTCHours(0,0,0,0);
-            const iter = proj.field.configuration.iterations.find(it => {
+            const iter = proj.iter.configuration.iterations.find(it => {
               const start = new Date(it.startDate);
               const end = new Date(start); end.setUTCDate(end.getUTCDate() + it.duration);
               return today >= start && today < end;
             });
             if (!iter) { core.setFailed('No current iteration'); return; }
 
+            // 3. Priority option from issue label
+            const prioLabel = context.payload.issue.labels
+              .map(l => l.name)
+              .find(n => /^P[0-4]$/.test(n));
+            const prioOption = prioLabel
+              ? proj.prio.options.find(o => o.name === prioLabel)
+              : null;
+            if (prioLabel && !prioOption) {
+              core.warning(`Label ${prioLabel} has no matching option in '${prioFieldName}'`);
+            }
+
+            // 4. Add (or get) project item
             const add = await github.graphql(`
               mutation($p:ID!,$c:ID!){
                 addProjectV2ItemById(input:{projectId:$p,contentId:$c}){ item { id } }
               }`, { p: proj.id, c: context.payload.issue.node_id });
+            const itemId = add.addProjectV2ItemById.item.id;
 
+            // 5. Set iteration
             await github.graphql(`
               mutation($p:ID!,$i:ID!,$f:ID!,$v:String!){
                 updateProjectV2ItemFieldValue(input:{
                   projectId:$p, itemId:$i, fieldId:$f, value:{ iterationId:$v }
                 }){ projectV2Item { id } }
-              }`, { p: proj.id, i: add.addProjectV2ItemById.item.id, f: proj.field.id, v: iter.id });
+              }`, { p: proj.id, i: itemId, f: proj.iter.id, v: iter.id });
+
+            // 6. Set priority (only if we found a matching option)
+            if (prioOption) {
+              await github.graphql(`
+                mutation($p:ID!,$i:ID!,$f:ID!,$v:String!){
+                  updateProjectV2ItemFieldValue(input:{
+                    projectId:$p, itemId:$i, fieldId:$f, value:{ singleSelectOptionId:$v }
+                  }){ projectV2Item { id } }
+                }`, { p: proj.id, i: itemId, f: proj.prio.id, v: prioOption.id });
+              core.info(`Set priority to ${prioLabel}`);
+            }
+
+            core.info(`Set iteration on item ${itemId}`);
