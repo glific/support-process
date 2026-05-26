@@ -1,11 +1,10 @@
 name: Set support week iteration
 on:
   issues:
-    types: [opened, labeled]
+    types: [opened]
 
 jobs:
   set-iteration:
-    if: contains(github.event.issue.labels.*.name, 'support')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/github-script@v7
@@ -15,7 +14,7 @@ jobs:
           ITERATION_FIELD: 'Support Week'
           OWNER_TYPE: organization
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.PROJECT_TOKEN }}
           script: |
             const { PROJECT_OWNER: owner, ITERATION_FIELD: fieldName, OWNER_TYPE } = process.env;
             const number = parseInt(process.env.PROJECT_NUMBER, 10);
